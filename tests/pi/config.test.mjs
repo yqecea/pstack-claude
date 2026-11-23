@@ -1,7 +1,7 @@
 // The settings the extension derives from its flags, environment, and model sheet.
 import { expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -108,6 +108,33 @@ test("a sheet committed at the git root replaces the agent sheet, from a subdire
     // Without a working directory the agent sheet stands, as before.
     expect(readSheet(agent)?.piModels.get("opus")).toBe("agent/model");
   } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("the git root for a working directory is resolved once per process", () => {
+  const { dir, agent, repo } = sheetDirs();
+  const bin = join(dir, "bin");
+  const calls = join(dir, "git-calls");
+  const realGit = spawnSync("sh", ["-c", "command -v git"], { encoding: "utf8" }).stdout.trim();
+  mkdirSync(bin);
+  writeFileSync(join(bin, "git"), `#!/bin/sh\necho call >> "$PSTACK_GIT_CALLS"\nexec ${realGit} "$@"\n`);
+  chmodSync(join(bin, "git"), 0o755);
+  const path = process.env.PATH;
+  const callsEnv = process.env.PSTACK_GIT_CALLS;
+  try {
+    expect(spawnSync("git", ["init", "-q", repo]).status).toBe(0);
+    const deep = join(repo, "sub", "deep");
+    mkdirSync(deep, { recursive: true });
+    process.env.PATH = `${bin}:${path}`;
+    process.env.PSTACK_GIT_CALLS = calls;
+    expect(readSheet(agent, deep)?.piModels.get("opus")).toBe("project/model");
+    expect(readSheet(agent, deep)?.piModels.get("opus")).toBe("project/model");
+    expect(readFileSync(calls, "utf8").trim().split("\n")).toHaveLength(1);
+  } finally {
+    if (callsEnv === undefined) delete process.env.PSTACK_GIT_CALLS;
+    else process.env.PSTACK_GIT_CALLS = callsEnv;
+    process.env.PATH = path;
     rmSync(dir, { recursive: true, force: true });
   }
 });
